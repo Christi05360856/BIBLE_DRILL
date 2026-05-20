@@ -1,5 +1,5 @@
 // ============================================
-// BIBLE QUIZ - script.js (CORRECTED)
+// BIBLE QUIZ - script.js (CORRECTED v2)
 // ============================================
 
 const quizScreen    = document.getElementById('quiz-screen');
@@ -45,6 +45,10 @@ let isWaitingForNext = false;
 const TOTAL_QUESTIONS = 50; // CHANGED: from 100 to 50
 const LETTERS = ['A', 'B', 'C', 'D'];
 
+// ✅ QUIZ AUTO-SAVE: localStorage key
+const QUIZ_STATE_KEY = 'bibleQuiz_currentState';
+let lastSaveTime = 0;
+
 const CORRECT_EMOJIS = ['😊', '😄', '🎉', '✨', '🌟', '👏', '🙌', '💯'];
 const WRONG_EMOJIS   = ['😢', '😞', '😔', '💔', '😟', '😕', '🤦', '😿'];
 
@@ -61,6 +65,73 @@ function init() {
   confirmSubmitBtn.addEventListener('click', submitQuiz);
 }
 
+// ============================================
+// ✅ QUIZ AUTO-SAVE TO LOCALSTORAGE
+// ============================================
+
+function saveQuizState() {
+  if (quizSubmitted) return;
+  const state = {
+    currentIndex,
+    userAnswers,
+    // Store absolute expiry timestamp so timer stays accurate across refreshes
+    expiresAt: Date.now() + (timeLeft * 1000),
+    selectedQuestions,
+    candidateName,
+    quizSubmitted,
+    savedAt: Date.now(),
+    screen: 'quiz'
+  };
+  try {
+    localStorage.setItem(QUIZ_STATE_KEY, JSON.stringify(state));
+  } catch (e) {
+    console.warn('Failed to save quiz state:', e);
+  }
+}
+
+function restoreQuizState() {
+  try {
+    const saved = localStorage.getItem(QUIZ_STATE_KEY);
+    if (!saved) return false;
+    const state = JSON.parse(saved);
+
+    // Reject stale sessions (> 12 hours)
+    const age = Date.now() - (state.savedAt || 0);
+    if (age > 12 * 60 * 60 * 1000) {
+      localStorage.removeItem(QUIZ_STATE_KEY);
+      return false;
+    }
+
+    // Restore core state
+    currentIndex = state.currentIndex || 0;
+    userAnswers = state.userAnswers || {};
+    candidateName = state.candidateName || '';
+    quizSubmitted = state.quizSubmitted || false;
+    selectedQuestions = state.selectedQuestions || [];
+
+    // Recalculate timeLeft from expiresAt so the timer accounts for real elapsed time
+    if (state.expiresAt) {
+      timeLeft = Math.max(0, Math.floor((state.expiresAt - Date.now()) / 1000));
+    } else {
+      timeLeft = state.timeLeft || 600;
+    }
+
+    return true;
+  } catch (e) {
+    console.error('Restore quiz state error:', e);
+    localStorage.removeItem(QUIZ_STATE_KEY);
+    return false;
+  }
+}
+
+function clearQuizState() {
+  localStorage.removeItem(QUIZ_STATE_KEY);
+}
+
+// ============================================
+// START QUIZ (with restore support)
+// ============================================
+
 async function startQuiz() {
   // Defensive check: ensure questions array exists
   if (typeof questions === 'undefined' || !Array.isArray(questions) || questions.length === 0) {
@@ -76,6 +147,25 @@ async function startQuiz() {
     candidateName = 'Guest';
   }
 
+  // ✅ AUTO-SAVE: Try to restore an unfinished quiz first
+  const hasRestored = restoreQuizState();
+  if (hasRestored && selectedQuestions.length === TOTAL_QUESTIONS && timeLeft > 0 && !quizSubmitted) {
+    // Validate that restored questions still exist in the master pool
+    const firstQ = selectedQuestions[0];
+    const stillValid = questions.some(q => q.question === firstQ.question);
+    if (stillValid) {
+      displayNameEl.textContent = candidateName;
+      renderQuestion();
+      updateNavButtons();
+      startTimer();
+      if (typeof window.showToast === 'function') {
+        window.showToast('Quiz restored from auto-save! 🎯', 'success');
+      }
+      return;
+    }
+  }
+
+  // No valid restore — start fresh
   displayNameEl.textContent = candidateName;
 
   // CHANGED: Use seen-questions filter from firebase.js
@@ -113,9 +203,17 @@ function shuffleArray(array) {
 function startTimer() {
   clearInterval(timerInterval);
   updateTimerDisplay();
+  lastSaveTime = Date.now();
   timerInterval = setInterval(() => {
     timeLeft--;
     updateTimerDisplay();
+
+    // ✅ AUTO-SAVE: throttle saves to every ~5 seconds to avoid excessive writes
+    if (Date.now() - lastSaveTime > 5000) {
+      saveQuizState();
+      lastSaveTime = Date.now();
+    }
+
     if (timeLeft <= 0) submitQuiz();
   }, 1000);
 }
@@ -196,6 +294,9 @@ function handleOptionClick(selectedIdx) {
 
   userAnswers[currentIndex] = selectedIdx;
 
+  // ✅ AUTO-SAVE: persist immediately after every answer
+  saveQuizState();
+
   const optionEls = optionsEl.querySelectorAll('.option');
 
   optionEls.forEach((el, idx) => {
@@ -257,6 +358,9 @@ async function submitQuiz() {
   quizSubmitted = true;
   clearInterval(timerInterval);
   closeSubmitModal();
+
+  // ✅ AUTO-SAVE: clear saved state since quiz is done
+  clearQuizState();
 
   const score = calculateScore();
   const points = calculatePoints(score);
