@@ -1,5 +1,5 @@
 // ============================================
-// BIBLE QUIZ - firebase.js (CORRECTED)
+// BIBLE QUIZ - firebase.js (CORRECTED v2)
 // ============================================
 
 const db = firebase.firestore();
@@ -18,50 +18,63 @@ let isProcessingAuth = false;
 // First epoch: Monday, May 4, 2026 at 08:00 UTC (09:00 WAT)
 const WEEK_EPOCH = new Date('2026-05-04T08:00:00Z');
 
-function getCurrentWeekId() {
+/**
+ * Central week calculator — returns ALL week metadata in one call.
+ * This ensures every other function stays in sync.
+ */
+function getWeekInfo() {
   const now = new Date();
   const diffTime = now - WEEK_EPOCH;
-  const diffMs = Math.floor(diffTime);
   const msPerWeek = 7 * 24 * 60 * 60 * 1000;
-  const weekNumber = Math.floor(diffMs / msPerWeek) + 1;
-  return '2026-W' + weekNumber;
+  const weekNumber0Indexed = Math.floor(diffTime / msPerWeek);
+  const weekNumber1Indexed = weekNumber0Indexed + 1;
+
+  const currentWeekId = '2026-W' + weekNumber1Indexed;
+  const previousWeekId = weekNumber1Indexed > 1 ? '2026-W' + weekNumber0Indexed : null;
+
+  const start = new Date(WEEK_EPOCH);
+  start.setTime(start.getTime() + (weekNumber0Indexed * msPerWeek));
+
+  const end = new Date(WEEK_EPOCH);
+  end.setTime(end.getTime() + ((weekNumber0Indexed + 1) * msPerWeek) - 1);
+
+  const nextWeekStart = new Date(WEEK_EPOCH);
+  nextWeekStart.setTime(nextWeekStart.getTime() + ((weekNumber0Indexed + 1) * msPerWeek));
+
+  return {
+    currentWeekId,
+    previousWeekId,
+    weekNumber: weekNumber1Indexed,
+    weekStart: start.toISOString(),
+    weekEnd: end.toISOString(),
+    nextWeekStart: nextWeekStart.toISOString(),
+    epoch: WEEK_EPOCH.toISOString(),
+    msPerWeek
+  };
+}
+
+function getCurrentWeekId() {
+  return getWeekInfo().currentWeekId;
 }
 
 function getWeekStart() {
-  const now = new Date();
-  const diffTime = now - WEEK_EPOCH;
-  const msPerWeek = 7 * 24 * 60 * 60 * 1000;
-  const weekNumber = Math.floor(diffTime / msPerWeek);
-  const start = new Date(WEEK_EPOCH);
-  start.setTime(start.getTime() + (weekNumber * msPerWeek));
-  return start.toISOString();
+  return getWeekInfo().weekStart;
 }
 
 function getWeekEnd() {
-  const now = new Date();
-  const diffTime = now - WEEK_EPOCH;
-  const msPerWeek = 7 * 24 * 60 * 60 * 1000;
-  const weekNumber = Math.floor(diffTime / msPerWeek);
-  const end = new Date(WEEK_EPOCH);
-  end.setTime(end.getTime() + ((weekNumber + 1) * msPerWeek) - 1);
-  return end.toISOString();
+  return getWeekInfo().weekEnd;
 }
 
 function getDisplayWeek() {
-  const now = new Date();
-  const diffTime = now - WEEK_EPOCH;
-  const msPerWeek = 7 * 24 * 60 * 60 * 1000;
-  const weekNumber = Math.floor(diffTime / msPerWeek) + 1;
-  return weekNumber;
+  return getWeekInfo().weekNumber;
 }
 
-// Get next Monday 9AM WAT
 function getNextWeekStart() {
-  const now = new Date();
-  const diffTime = now - WEEK_EPOCH;
-  const msPerWeek = 7 * 24 * 60 * 60 * 1000;
-  const weekNumber = Math.floor(diffTime / msPerWeek);
-  return new Date(WEEK_EPOCH.getTime() + ((weekNumber + 1) * msPerWeek));
+  return new Date(getWeekInfo().nextWeekStart);
+}
+
+function getPreviousWeekId() {
+  return getWeekInfo().previousWeekId;
 }
 
 // Format time until next week
@@ -594,16 +607,24 @@ document.head.appendChild(style);
 // ============================================
 
 /**
- * Archives top 3 winners and auto-creates reward claims
- * This should be called by admin or a scheduled function at week end
+ * Archives top 3 winners and auto-creates reward claims.
+ * Uses getWeekInfo() for consistent week IDs.
  */
 async function archiveWeeklyWinners() {
-  const previousWeekId = getPreviousWeekId();
+  const weekInfo = getWeekInfo();
+  const previousWeekId = weekInfo.previousWeekId;
+
+  if (!previousWeekId) {
+    console.log('No previous week to archive (currently in week 1)');
+    showToast('No previous week to archive', 'info');
+    return;
+  }
 
   try {
     const doc = await db.collection('leaderboard').doc(previousWeekId).get();
     if (!doc.exists) {
       console.log('No leaderboard data for previous week');
+      showToast('No leaderboard data for ' + previousWeekId, 'info');
       return;
     }
 
@@ -613,6 +634,7 @@ async function archiveWeeklyWinners() {
 
     if (top3.length === 0) {
       console.log('No winners to archive');
+      showToast('No winners to archive for ' + previousWeekId, 'info');
       return;
     }
 
@@ -670,16 +692,8 @@ async function archiveWeeklyWinners() {
 
   } catch (err) {
     console.error('Archive weekly winners error:', err);
+    showToast('Error archiving week. Check console.', 'error');
   }
-}
-
-function getPreviousWeekId() {
-  const now = new Date();
-  const diffTime = now - WEEK_EPOCH;
-  const msPerWeek = 7 * 24 * 60 * 60 * 1000;
-  const weekNumber = Math.floor(diffTime / msPerWeek); // Current week number (0-indexed)
-  const prevWeekNum = weekNumber; // Previous week number
-  return '2026-W' + prevWeekNum;
 }
 
 window.archiveWeeklyWinners = archiveWeeklyWinners;
@@ -761,7 +775,7 @@ async function getQuizQuestions(allQuestions) {
 window.getQuizQuestions = getQuizQuestions;
 
 // ============================================
-// QUIZ SAVE FUNCTION
+// QUIZ SAVE FUNCTION  —  BEST SCORE BUG FIX
 // ============================================
 
 async function saveQuizResult(score, totalQuestions, timeLeft, points) {
@@ -785,7 +799,9 @@ async function saveQuizResult(score, totalQuestions, timeLeft, points) {
       streak = 1;
     }
 
-    const newBest = Math.max(score, userData.bestScore || 0);
+    // ✅ BEST SCORE BUG FIX: store percentage (0-100) instead of raw count
+    const percentage = Math.round((score / totalQuestions) * 100);
+    const newBest = Math.max(percentage, userData.bestScore || 0);
     const newTotalPoints = (userData.totalPoints || 0) + points;
 
     await userRef.set({
@@ -793,7 +809,7 @@ async function saveQuizResult(score, totalQuestions, timeLeft, points) {
       email: user.email,
       totalPoints: newTotalPoints,
       quizzesTaken: (userData.quizzesTaken || 0) + 1,
-      bestScore: newBest,
+      bestScore: newBest,        // Now correctly stores 0-100
       currentStreak: streak,
       longestStreak: Math.max(streak, userData.longestStreak || 0),
       lastQuizDate: firebase.firestore.FieldValue.serverTimestamp()
@@ -804,7 +820,7 @@ async function saveQuizResult(score, totalQuestions, timeLeft, points) {
       userName: user.displayName || userData.name || 'User',
       score: score,
       totalQuestions: totalQuestions,
-      percentage: Math.round((score / totalQuestions) * 100),
+      percentage: percentage,
       timeLeft: timeLeft,
       points: points,
       timestamp: firebase.firestore.FieldValue.serverTimestamp()
@@ -846,6 +862,73 @@ async function updateWeeklyLeaderboard(userId, userName, points) {
     console.error('Leaderboard error:', err);
   }
 }
+
+// ============================================
+// HISTORICAL BEST SCORE RECALCULATION SCRIPT
+// ============================================
+
+/**
+ * Recalculates bestScore for a single user from their quizAttempts history.
+ * Call from console: await recalculateUserBestScore('USER_ID')
+ */
+async function recalculateUserBestScore(userId) {
+  try {
+    const snap = await db.collection('quizAttempts')
+      .where('userId', '==', userId)
+      .get();
+
+    let maxPercentage = 0;
+    snap.forEach(doc => {
+      const data = doc.data();
+      // Support both old (raw count in bestScore) and new (percentage field)
+      const pct = data.percentage || Math.round((data.score / data.totalQuestions) * 100) || 0;
+      if (pct > maxPercentage) maxPercentage = pct;
+    });
+
+    await db.collection('users').doc(userId).update({
+      bestScore: maxPercentage
+    });
+
+    console.log(`✅ Recalculated bestScore for ${userId}: ${maxPercentage}%`);
+    return maxPercentage;
+  } catch (err) {
+    console.error(`❌ Recalculate bestScore error for ${userId}:`, err);
+    throw err;
+  }
+}
+
+/**
+ * Admin function: Recalculates bestScore for ALL users.
+ * Call from browser console: await recalculateAllBestScores()
+ */
+async function recalculateAllBestScores() {
+  try {
+    const usersSnap = await db.collection('users').get();
+    let updated = 0;
+    let errors = 0;
+
+    for (const userDoc of usersSnap.docs) {
+      try {
+        await recalculateUserBestScore(userDoc.id);
+        updated++;
+      } catch (err) {
+        errors++;
+        console.error(`Failed to recalculate for ${userDoc.id}:`, err);
+      }
+    }
+
+    showToast(`Best scores recalculated! Updated: ${updated}, Errors: ${errors}`, 'success');
+    console.log(`🏁 Recalculation complete. Updated: ${updated}, Errors: ${errors}`);
+    return { updated, errors };
+  } catch (err) {
+    console.error('recalculateAllBestScores error:', err);
+    showToast('Error recalculating best scores', 'error');
+    throw err;
+  }
+}
+
+window.recalculateUserBestScore = recalculateUserBestScore;
+window.recalculateAllBestScores = recalculateAllBestScores;
 
 // ============================================
 // LEADERBOARD FUNCTIONS
@@ -1584,4 +1667,4 @@ if (document.readyState === 'loading') {
   attachEventListeners();
 }
 
-console.log('🔥 firebase.js fully loaded');
+console.log('🔥 firebase.js fully loaded (v2 - corrected)');
