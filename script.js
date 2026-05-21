@@ -1,5 +1,5 @@
 // ============================================
-// BIBLE QUIZ - script.js (CORRECTED v2)
+// BIBLE QUIZ - script.js (v3 - ROBUST)
 // ============================================
 
 const quizScreen    = document.getElementById('quiz-screen');
@@ -35,19 +35,16 @@ const rewardSection    = document.getElementById('reward-section');
 
 let currentIndex = 0;
 let userAnswers  = {};
-let timeLeft     = 10 * 60; // CHANGED: 10 minutes for 50 questions
+let timeLeft     = 6 * 60;      // 6 minutes for 15 questions
 let timerInterval = null;
 let candidateName = '';
 let quizSubmitted = false;
 let selectedQuestions = [];
 let isWaitingForNext = false;
 
-const TOTAL_QUESTIONS = 50; // CHANGED: from 100 to 50
+const TOTAL_QUESTIONS = 15;     // Changed from 50 to 15
 const LETTERS = ['A', 'B', 'C', 'D'];
-
-// ✅ QUIZ AUTO-SAVE: localStorage key
-const QUIZ_STATE_KEY = 'bibleQuiz_currentState';
-let lastSaveTime = 0;
+const QUIZ_STATE_KEY = 'bibleQuiz_currentState_v3';
 
 const CORRECT_EMOJIS = ['😊', '😄', '🎉', '✨', '🌟', '👏', '🙌', '💯'];
 const WRONG_EMOJIS   = ['😢', '😞', '😔', '💔', '😟', '😕', '🤦', '😿'];
@@ -66,74 +63,131 @@ function init() {
 }
 
 // ============================================
-// ✅ QUIZ AUTO-SAVE TO LOCALSTORAGE
+// LOCALSTORAGE AUTO-SAVE (Survives Refresh)
 // ============================================
 
 function saveQuizState() {
   if (quizSubmitted) return;
-  const state = {
-    currentIndex,
-    userAnswers,
-    // Store absolute expiry timestamp so timer stays accurate across refreshes
-    expiresAt: Date.now() + (timeLeft * 1000),
-    selectedQuestions,
-    candidateName,
-    quizSubmitted,
-    savedAt: Date.now(),
-    screen: 'quiz'
-  };
   try {
+    const state = {
+      version: 3,
+      currentIndex: currentIndex,
+      userAnswers: userAnswers,
+      expiresAt: Date.now() + (timeLeft * 1000),
+      selectedQuestions: selectedQuestions,
+      candidateName: candidateName,
+      quizSubmitted: false,
+      savedAt: Date.now(),
+      totalQuestions: TOTAL_QUESTIONS
+    };
     localStorage.setItem(QUIZ_STATE_KEY, JSON.stringify(state));
   } catch (e) {
-    console.warn('Failed to save quiz state:', e);
+    console.warn('saveQuizState failed:', e);
   }
 }
 
 function restoreQuizState() {
   try {
-    const saved = localStorage.getItem(QUIZ_STATE_KEY);
-    if (!saved) return false;
-    const state = JSON.parse(saved);
+    const raw = localStorage.getItem(QUIZ_STATE_KEY);
+    if (!raw) return null;
+    const state = JSON.parse(raw);
 
-    // Reject stale sessions (> 12 hours)
+    // Version check
+    if (state.version !== 3) {
+      console.log('Quiz state version mismatch, clearing old state');
+      localStorage.removeItem(QUIZ_STATE_KEY);
+      return null;
+    }
+
+    // Age check: discard if older than 12 hours
     const age = Date.now() - (state.savedAt || 0);
     if (age > 12 * 60 * 60 * 1000) {
+      console.log('Quiz state too old (>12h), clearing');
       localStorage.removeItem(QUIZ_STATE_KEY);
-      return false;
+      return null;
     }
 
-    // Restore core state
-    currentIndex = state.currentIndex || 0;
-    userAnswers = state.userAnswers || {};
-    candidateName = state.candidateName || '';
-    quizSubmitted = state.quizSubmitted || false;
-    selectedQuestions = state.selectedQuestions || [];
+    // Time check: calculate true remaining time from absolute expiry
+    const remaining = state.expiresAt
+      ? Math.max(0, Math.floor((state.expiresAt - Date.now()) / 1000))
+      : (state.timeLeft || 0);
 
-    // Recalculate timeLeft from expiresAt so the timer accounts for real elapsed time
-    if (state.expiresAt) {
-      timeLeft = Math.max(0, Math.floor((state.expiresAt - Date.now()) / 1000));
-    } else {
-      timeLeft = state.timeLeft || 600;
+    if (remaining <= 0) {
+      console.log('Quiz timer expired, clearing state');
+      localStorage.removeItem(QUIZ_STATE_KEY);
+      return null;
     }
 
-    return true;
+    // Validate questions array
+    if (!Array.isArray(state.selectedQuestions) || state.selectedQuestions.length === 0) {
+      console.log('No questions in saved state');
+      localStorage.removeItem(QUIZ_STATE_KEY);
+      return null;
+    }
+
+    // Validate question shape (must have question text, options, answer)
+    const firstQ = state.selectedQuestions[0];
+    if (!firstQ || !firstQ.question || !Array.isArray(firstQ.options) || typeof firstQ.answer !== 'number') {
+      console.log('Invalid question shape in saved state');
+      localStorage.removeItem(QUIZ_STATE_KEY);
+      return null;
+    }
+
+    console.log('Quiz state restored:', {
+      currentIndex: state.currentIndex,
+      answered: Object.keys(state.userAnswers || {}).length,
+      timeLeft: remaining,
+      questions: state.selectedQuestions.length
+    });
+
+    return {
+      currentIndex: state.currentIndex || 0,
+      userAnswers: state.userAnswers || {},
+      timeLeft: remaining,
+      selectedQuestions: state.selectedQuestions,
+      candidateName: state.candidateName || ''
+    };
   } catch (e) {
-    console.error('Restore quiz state error:', e);
+    console.error('restoreQuizState error:', e);
     localStorage.removeItem(QUIZ_STATE_KEY);
-    return false;
+    return null;
   }
 }
 
 function clearQuizState() {
   localStorage.removeItem(QUIZ_STATE_KEY);
+  updateResumeButtonVisibility();
 }
 
+function updateResumeButtonVisibility() {
+  const btn = document.getElementById('resume-quiz-btn');
+  if (!btn) return;
+  try {
+    const saved = localStorage.getItem(QUIZ_STATE_KEY);
+    if (saved) {
+      const state = JSON.parse(saved);
+      const age = Date.now() - (state.savedAt || 0);
+      const valid = age < 12 * 60 * 60 * 1000 &&
+                    (state.expiresAt > Date.now()) &&
+                    !state.quizSubmitted &&
+                    state.version === 3;
+      if (valid) {
+        btn.classList.remove('hidden');
+        return;
+      }
+    }
+  } catch (e) {}
+  btn.classList.add('hidden');
+}
+
+window.updateResumeButtonVisibility = updateResumeButtonVisibility;
+
 // ============================================
-// START QUIZ (with restore support)
+// START QUIZ (Restore-aware)
 // ============================================
 
 async function startQuiz() {
-  // Defensive check: ensure questions array exists
+  // Validate questions array exists
   if (typeof questions === 'undefined' || !Array.isArray(questions) || questions.length === 0) {
     alert('Error: Questions failed to load. Please refresh the page.');
     console.error('questions.js not loaded or empty');
@@ -141,54 +195,56 @@ async function startQuiz() {
   }
 
   const user = firebase.auth().currentUser;
-  if (user) {
-    candidateName = user.displayName || user.email;
-  } else {
-    candidateName = 'Guest';
-  }
-
-  // ✅ AUTO-SAVE: Try to restore an unfinished quiz first
-  const hasRestored = restoreQuizState();
-  if (hasRestored && selectedQuestions.length === TOTAL_QUESTIONS && timeLeft > 0 && !quizSubmitted) {
-    // Validate that restored questions still exist in the master pool
-    const firstQ = selectedQuestions[0];
-    const stillValid = questions.some(q => q.question === firstQ.question);
-    if (stillValid) {
-      displayNameEl.textContent = candidateName;
-      renderQuestion();
-      updateNavButtons();
-      startTimer();
-      if (typeof window.showToast === 'function') {
-        window.showToast('Quiz restored from auto-save! 🎯', 'success');
-      }
-      return;
-    }
-  }
-
-  // No valid restore — start fresh
+  candidateName = user ? (user.displayName || user.email) : 'Guest';
   displayNameEl.textContent = candidateName;
 
-  // CHANGED: Use seen-questions filter from firebase.js
-  if (typeof window.getQuizQuestions === 'function') {
-    try {
-      selectedQuestions = await window.getQuizQuestions(questions);
-    } catch (err) {
-      console.error('getQuizQuestions failed, falling back:', err);
-      selectedQuestions = shuffleArray(questions).slice(0, TOTAL_QUESTIONS);
+  // ── ATTEMPT 1: Restore unfinished quiz from localStorage ──
+  const restored = restoreQuizState();
+  if (restored) {
+    currentIndex      = restored.currentIndex;
+    userAnswers       = restored.userAnswers;
+    timeLeft          = restored.timeLeft;
+    selectedQuestions = restored.selectedQuestions;
+    candidateName     = restored.candidateName || candidateName;
+    quizSubmitted     = false;
+    isWaitingForNext  = false;
+
+    displayNameEl.textContent = candidateName;
+    renderQuestion();
+    updateNavButtons();
+    startTimer();
+
+    if (typeof window.showToast === 'function') {
+      window.showToast('Quiz restored! You have ' + Math.ceil(timeLeft / 60) + ' min left ⏳', 'success');
     }
-  } else {
-    selectedQuestions = shuffleArray(questions).slice(0, TOTAL_QUESTIONS);
+    updateResumeButtonVisibility();
+    return;
   }
 
-  currentIndex = 0;
-  userAnswers = {};
-  timeLeft = 10 * 60; // CHANGED: 10 minutes
-  quizSubmitted = false;
+  // ── ATTEMPT 2: Fresh start ──
+  const targetCount = Math.min(TOTAL_QUESTIONS, questions.length);
+
+  if (typeof window.getQuizQuestions === 'function') {
+    try {
+      selectedQuestions = await window.getQuizQuestions(questions, targetCount);
+    } catch (err) {
+      console.error('getQuizQuestions failed, falling back:', err);
+      selectedQuestions = shuffleArray(questions).slice(0, targetCount);
+    }
+  } else {
+    selectedQuestions = shuffleArray(questions).slice(0, targetCount);
+  }
+
+  currentIndex     = 0;
+  userAnswers      = {};
+  timeLeft         = 6 * 60;  // 6 minutes
+  quizSubmitted    = false;
   isWaitingForNext = false;
 
   renderQuestion();
   updateNavButtons();
   startTimer();
+  updateResumeButtonVisibility();
 }
 
 function shuffleArray(array) {
@@ -200,21 +256,27 @@ function shuffleArray(array) {
   return arr;
 }
 
+// ============================================
+// TIMER
+// ============================================
+
 function startTimer() {
   clearInterval(timerInterval);
   updateTimerDisplay();
-  lastSaveTime = Date.now();
+
   timerInterval = setInterval(() => {
     timeLeft--;
     updateTimerDisplay();
 
-    // ✅ AUTO-SAVE: throttle saves to every ~5 seconds to avoid excessive writes
-    if (Date.now() - lastSaveTime > 5000) {
+    // Auto-save every 3 seconds while timer runs
+    if (timeLeft % 3 === 0) {
       saveQuizState();
-      lastSaveTime = Date.now();
     }
 
-    if (timeLeft <= 0) submitQuiz();
+    if (timeLeft <= 0) {
+      clearInterval(timerInterval);
+      submitQuiz();
+    }
   }, 1000);
 }
 
@@ -226,8 +288,17 @@ function updateTimerDisplay() {
   else timerEl.style.color = '#ef4444';
 }
 
+// ============================================
+// RENDER & NAVIGATE
+// ============================================
+
 function renderQuestion() {
   const q = selectedQuestions[currentIndex];
+  if (!q) {
+    console.error('No question at index', currentIndex);
+    return;
+  }
+
   currentNumEl.textContent = currentIndex + 1;
   qNumEl.textContent = currentIndex + 1;
   questionTextEl.textContent = q.question;
@@ -279,11 +350,16 @@ function navigate(direction) {
   let newIndex = currentIndex + direction;
   if (newIndex >= 0 && newIndex < TOTAL_QUESTIONS) {
     currentIndex = newIndex;
+    saveQuizState();   // Save on every navigation
     renderQuestion();
   } else if (newIndex >= TOTAL_QUESTIONS) {
     openSubmitModal();
   }
 }
+
+// ============================================
+// ANSWER HANDLING
+// ============================================
 
 function handleOptionClick(selectedIdx) {
   if (isWaitingForNext) return;
@@ -294,11 +370,10 @@ function handleOptionClick(selectedIdx) {
 
   userAnswers[currentIndex] = selectedIdx;
 
-  // ✅ AUTO-SAVE: persist immediately after every answer
+  // IMMEDIATE save after every answer
   saveQuizState();
 
   const optionEls = optionsEl.querySelectorAll('.option');
-
   optionEls.forEach((el, idx) => {
     if (idx === correctIdx) {
       el.classList.add('correct');
@@ -310,7 +385,6 @@ function handleOptionClick(selectedIdx) {
   });
 
   showFeedback(isCorrect, correctIdx, true);
-
   isWaitingForNext = true;
 
   setTimeout(() => {
@@ -343,10 +417,15 @@ function showFeedback(isCorrect, correctIdx, animate) {
   }
 }
 
+// ============================================
+// SUBMIT
+// ============================================
+
 function openSubmitModal() {
   const answered = Object.keys(userAnswers).length;
   answeredCountEl.textContent = answered;
   confirmModal.classList.remove('hidden');
+  saveQuizState();
 }
 
 function closeSubmitModal() {
@@ -359,7 +438,7 @@ async function submitQuiz() {
   clearInterval(timerInterval);
   closeSubmitModal();
 
-  // ✅ AUTO-SAVE: clear saved state since quiz is done
+  // Clear saved state — quiz is done
   clearQuizState();
 
   const score = calculateScore();
@@ -374,8 +453,8 @@ async function submitQuiz() {
 
 function calculateScore() {
   let correct = 0;
-  for (let i = 0; i < TOTAL_QUESTIONS; i++) {
-    if (userAnswers[i] !== undefined && selectedQuestions[i].answer === userAnswers[i]) {
+  for (let i = 0; i < selectedQuestions.length; i++) {
+    if (userAnswers[i] !== undefined && selectedQuestions[i] && selectedQuestions[i].answer === userAnswers[i]) {
       correct++;
     }
   }
@@ -391,6 +470,10 @@ function calculatePoints(score) {
 
   return points;
 }
+
+// ============================================
+// RESULTS
+// ============================================
 
 async function showResults(correctCount, points) {
   if (typeof window.showScreen === 'function') {
@@ -424,11 +507,9 @@ async function showResults(correctCount, points) {
   if (typeof loadUserDashboard === 'function') {
     await loadUserDashboard();
   }
-
   if (typeof renderReviewLeaderboard === 'function') {
     await renderReviewLeaderboard();
   }
-
   if (typeof getDisplayWeek === 'function') {
     const weekBadge = document.getElementById('week-badge');
     if (weekBadge) weekBadge.textContent = 'Week ' + getDisplayWeek();
