@@ -10,8 +10,6 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 <base target="_blank">
-<base target="_blank">
-<base target="_blank">
 </head>
 <body>
 
@@ -27,7 +25,7 @@
       <div class="card landing-card">
         <div class="logo">📖</div>
         <h1>Bible Quiz Platform</h1>
-        <p class="subtitle">50 Questions • 10 Minutes</p>
+        <p class="subtitle">15 Questions • 6 Minutes</p>
 
         <!-- Auth Buttons (shown when logged out) -->
         <div id="auth-section" class="auth-section">
@@ -46,6 +44,7 @@
 
           <div class="welcome-actions" id="welcome-actions">
             <button id="begin-test-btn" class="primary-btn begin-btn">📝 Begin Test</button>
+            <button id="resume-quiz-btn" class="primary-btn begin-btn hidden" style="background: linear-gradient(135deg, #6366f1, #8b5cf6); margin-top: 10px;">▶️ Resume Quiz</button>
             <p id="quiz-attempts-left" class="attempts-left hidden"></p>
           </div>
         </div>
@@ -58,8 +57,8 @@
     <section id="quiz-screen" class="screen hidden">
       <div class="quiz-wrapper">
         <div class="top-bar">
-          <div class="progress">Question <span id="current-num">1</span> / 50</div>
-          <div id="timer" class="timer">10:00</div>
+          <div class="progress">Question <span id="current-num">1</span> / 15</div>
+          <div id="timer" class="timer">06:00</div>
           <div id="display-name" class="username-display"></div>
         </div>
 
@@ -92,7 +91,7 @@
 
         <div class="score-box">
           <h1 id="score-display">0%</h1>
-          <p id="detailed-score">0 / 50</p>
+          <p id="detailed-score">0 / 15</p>
           <div class="score-badge" id="score-badge">Pass</div>
           <p id="points-earned" class="points-earned">+0 points</p>
         </div>
@@ -318,7 +317,7 @@
       <div class="modal-content">
         <div class="modal-icon">⚠️</div>
         <h3>Submit Exam?</h3>
-        <p>You have answered <span id="answered-count">0</span> out of 50 questions.</p>
+        <p>You have answered <span id="answered-count">0</span> out of 15 questions.</p>
         <div class="modal-actions">
           <button id="cancel-submit" class="secondary-btn">Cancel</button>
           <button id="confirm-submit" class="primary-btn">Yes, Submit</button>
@@ -393,7 +392,7 @@
       measurementId: "G-WD3YD9N6Y3"
     };
     firebase.initializeApp(firebaseConfig);
-    console.log("Firebase initialized with new config");
+    console.log("Firebase initialized");
   </script>
 
   <!-- ============================================ -->
