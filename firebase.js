@@ -1,45 +1,44 @@
 // ============================================
-// BIBLE QUIZ - firebase.js (CORRECTED v2)
+// BIBLE QUIZ - firebase.js (v3 - ROBUST)
 // ============================================
 
 const db = firebase.firestore();
 const auth = firebase.auth();
 
-// Prevent modal from spam-opening
 let authModalShown = false;
 let currentScreen = 'landing';
 let isProcessingAuth = false;
 
 // ============================================
-// WEEK CONFIGURATION - MONDAY 9AM WAT (08:00 UTC)
+// WEEK CONFIGURATION - SINGLE SOURCE OF TRUTH
 // ============================================
 
 // Week starts every MONDAY at 9:00 AM Nigeria time (WAT = UTC+1, so 08:00 UTC)
 // First epoch: Monday, May 4, 2026 at 08:00 UTC (09:00 WAT)
 const WEEK_EPOCH = new Date('2026-05-04T08:00:00Z');
+const MS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * Central week calculator — returns ALL week metadata in one call.
- * This ensures every other function stays in sync.
+ * Central week calculator — ALL week functions use this.
+ * Prevents sync bugs between admin and user views.
  */
 function getWeekInfo() {
   const now = new Date();
   const diffTime = now - WEEK_EPOCH;
-  const msPerWeek = 7 * 24 * 60 * 60 * 1000;
-  const weekNumber0Indexed = Math.floor(diffTime / msPerWeek);
+  const weekNumber0Indexed = Math.floor(diffTime / MS_PER_WEEK);
   const weekNumber1Indexed = weekNumber0Indexed + 1;
 
   const currentWeekId = '2026-W' + weekNumber1Indexed;
   const previousWeekId = weekNumber1Indexed > 1 ? '2026-W' + weekNumber0Indexed : null;
 
   const start = new Date(WEEK_EPOCH);
-  start.setTime(start.getTime() + (weekNumber0Indexed * msPerWeek));
+  start.setTime(start.getTime() + (weekNumber0Indexed * MS_PER_WEEK));
 
   const end = new Date(WEEK_EPOCH);
-  end.setTime(end.getTime() + ((weekNumber0Indexed + 1) * msPerWeek) - 1);
+  end.setTime(end.getTime() + ((weekNumber0Indexed + 1) * MS_PER_WEEK) - 1);
 
   const nextWeekStart = new Date(WEEK_EPOCH);
-  nextWeekStart.setTime(nextWeekStart.getTime() + ((weekNumber0Indexed + 1) * msPerWeek));
+  nextWeekStart.setTime(nextWeekStart.getTime() + ((weekNumber0Indexed + 1) * MS_PER_WEEK));
 
   return {
     currentWeekId,
@@ -47,46 +46,25 @@ function getWeekInfo() {
     weekNumber: weekNumber1Indexed,
     weekStart: start.toISOString(),
     weekEnd: end.toISOString(),
-    nextWeekStart: nextWeekStart.toISOString(),
-    epoch: WEEK_EPOCH.toISOString(),
-    msPerWeek
+    nextWeekStart: nextWeekStart.toISOString()
   };
 }
 
-function getCurrentWeekId() {
-  return getWeekInfo().currentWeekId;
-}
+// All week functions delegate to getWeekInfo() for perfect sync
+function getCurrentWeekId()  { return getWeekInfo().currentWeekId; }
+function getWeekStart()      { return getWeekInfo().weekStart; }
+function getWeekEnd()        { return getWeekInfo().weekEnd; }
+function getDisplayWeek()    { return getWeekInfo().weekNumber; }
+function getNextWeekStart()  { return new Date(getWeekInfo().nextWeekStart); }
+function getPreviousWeekId() { return getWeekInfo().previousWeekId; }
 
-function getWeekStart() {
-  return getWeekInfo().weekStart;
-}
-
-function getWeekEnd() {
-  return getWeekInfo().weekEnd;
-}
-
-function getDisplayWeek() {
-  return getWeekInfo().weekNumber;
-}
-
-function getNextWeekStart() {
-  return new Date(getWeekInfo().nextWeekStart);
-}
-
-function getPreviousWeekId() {
-  return getWeekInfo().previousWeekId;
-}
-
-// Format time until next week
 function getTimeUntilNextWeek() {
   const now = new Date();
   const nextWeek = getNextWeekStart();
   const diff = nextWeek - now;
-
   const days = Math.floor(diff / (1000 * 60 * 60 * 24));
   const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
   const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-
   return { days, hours, minutes, totalMs: diff, nextWeek };
 }
 
@@ -155,8 +133,8 @@ function showScreen(screenName) {
     if (el) el.classList.add('hidden');
   });
 
-  const targetId = screenName === 'landing' ? 'landing-screen' : 
-                   screenName === 'quiz' ? 'quiz-screen' : 
+  const targetId = screenName === 'landing' ? 'landing-screen' :
+                   screenName === 'quiz' ? 'quiz-screen' :
                    screenName === 'result' ? 'result-screen' :
                    screenName === 'leaderboard' ? 'leaderboard-screen' :
                    screenName === 'rewards' ? 'rewards-screen' :
@@ -284,6 +262,7 @@ async function handleRegister(e) {
       totalPoints: 0,
       quizzesTaken: 0,
       bestScore: 0,
+      bestScoreFormat: 'percentage',
       currentStreak: 0,
       longestStreak: 0,
       phoneNumber: '',
@@ -485,26 +464,39 @@ async function updateUIForLoggedInUser(user) {
   updateWeekBadges();
   checkNewWeekBanner();
 
-  // Always show a loading state first
+  // Check for saved quiz state and show resume button
+  if (typeof window.updateResumeButtonVisibility === 'function') {
+    window.updateResumeButtonVisibility();
+  }
+
+  // Always show loading state first
   showQuizAttemptsLeft(null, true);
 
-  // Check if profile is complete
   try {
     const userDoc = await db.collection('users').doc(user.uid).get();
     const userData = userDoc.data() || {};
 
+    // ── AUTO-MIGRATE bestScore from old raw-count format ──
+    if (userData.bestScore !== undefined && userData.bestScoreFormat !== 'percentage') {
+      try {
+        console.log('Auto-migrating bestScore for user:', user.uid);
+        await recalculateUserBestScore(user.uid);
+        await db.collection('users').doc(user.uid).update({ bestScoreFormat: 'percentage' });
+        console.log('Best score migrated successfully');
+      } catch (migrateErr) {
+        console.error('Auto-migration failed:', migrateErr);
+      }
+    }
+
     if (!userData.phoneNumber || !userData.networkProvider) {
       showRequiredProfileModal();
       showToast('📱 Please complete your profile to continue', 'info');
-      // Hide the attempts indicator while profile is incomplete
       showQuizAttemptsLeft(0);
     } else {
-      // Profile complete — check daily limit immediately
       const limitCheck = await checkDailyQuizLimit();
       if (limitCheck.blocked && limitCheck.reason !== 'check_failed') {
         showDailyLimitMessage(limitCheck);
       } else if (limitCheck.blocked && limitCheck.reason === 'check_failed') {
-        // Index missing or error — show retry message but DON'T block the button
         showQuizAttemptsLeft(null, true, true);
       } else {
         showQuizAttemptsLeft(limitCheck.remaining);
@@ -512,7 +504,7 @@ async function updateUIForLoggedInUser(user) {
     }
   } catch (err) {
     console.error('Profile check error:', err);
-    showQuizAttemptsLeft(2); // Default to showing 2 attempts if check fails
+    showQuizAttemptsLeft(2);
   }
 
   setTimeout(() => checkNotificationStatus(), 1000);
@@ -520,14 +512,13 @@ async function updateUIForLoggedInUser(user) {
 
 function updateWeekBadges() {
   const weekNum = getDisplayWeek();
-  const badges = document.querySelectorAll('#leaderboard-week-badge, #week-badge');
-  badges.forEach(badge => {
+  document.querySelectorAll('#leaderboard-week-badge, #week-badge').forEach(badge => {
     if (badge) badge.textContent = 'Week ' + weekNum;
   });
 }
 
 // ============================================
-// NEW WEEK BANNER & NOTIFICATIONS
+// NEW WEEK BANNER
 // ============================================
 
 function checkNewWeekBanner() {
@@ -535,11 +526,9 @@ function checkNewWeekBanner() {
   const currentWeek = getCurrentWeekId();
 
   if (lastSeenWeek !== currentWeek) {
-    // New week detected! Show banner
     showNewWeekBanner(currentWeek);
     localStorage.setItem('lastSeenWeek', currentWeek);
 
-    // Send push notification if enabled
     if (Notification.permission === 'granted') {
       showBrowserNotification(
         '🎉 New Week Started!',
@@ -550,7 +539,6 @@ function checkNewWeekBanner() {
 }
 
 function showNewWeekBanner(weekId) {
-  // Remove existing banner if any
   const existing = document.getElementById('new-week-banner');
   if (existing) existing.remove();
 
@@ -585,45 +573,34 @@ function showNewWeekBanner(weekId) {
   `;
 
   document.body.appendChild(banner);
-
-  // Auto-dismiss after 10 seconds
-  setTimeout(() => {
-    if (banner.parentNode) banner.remove();
-  }, 10000);
+  setTimeout(() => { if (banner.parentNode) banner.remove(); }, 10000);
 }
 
-// Add slideDown animation
-const style = document.createElement('style');
-style.textContent = `
+const bannerStyle = document.createElement('style');
+bannerStyle.textContent = `
   @keyframes slideDown {
     from { transform: translateY(-100%); }
     to { transform: translateY(0); }
   }
 `;
-document.head.appendChild(style);
+document.head.appendChild(bannerStyle);
 
 // ============================================
-// WEEKLY AUTO-ARCHIVE & REWARD CLAIMS
+// WEEKLY AUTO-ARCHIVE (Admin)
 // ============================================
 
-/**
- * Archives top 3 winners and auto-creates reward claims.
- * Uses getWeekInfo() for consistent week IDs.
- */
 async function archiveWeeklyWinners() {
   const weekInfo = getWeekInfo();
   const previousWeekId = weekInfo.previousWeekId;
 
   if (!previousWeekId) {
-    console.log('No previous week to archive (currently in week 1)');
-    showToast('No previous week to archive', 'info');
+    showToast('No previous week to archive (currently in week 1)', 'info');
     return;
   }
 
   try {
     const doc = await db.collection('leaderboard').doc(previousWeekId).get();
     if (!doc.exists) {
-      console.log('No leaderboard data for previous week');
       showToast('No leaderboard data for ' + previousWeekId, 'info');
       return;
     }
@@ -633,12 +610,10 @@ async function archiveWeeklyWinners() {
     const rewards = ['2GB Data', '1GB Data', '500MB Data'];
 
     if (top3.length === 0) {
-      console.log('No winners to archive');
       showToast('No winners to archive for ' + previousWeekId, 'info');
       return;
     }
 
-    // Archive winners
     await db.collection('weeklyWinners').doc(previousWeekId).set({
       week: previousWeekId,
       weekStart: doc.data().weekStart,
@@ -653,15 +628,11 @@ async function archiveWeeklyWinners() {
       }))
     });
 
-    // Auto-create reward claims for top 3
     for (let i = 0; i < top3.length; i++) {
       const winner = top3[i];
-
-      // Get user details for phone/network
       const userDoc = await db.collection('users').doc(winner.userId).get();
       const userData = userDoc.exists ? userDoc.data() : {};
 
-      // Check if claim already exists
       const existingClaim = await db.collection('rewardClaims')
         .where('userId', '==', winner.userId)
         .where('week', '==', previousWeekId)
@@ -687,9 +658,7 @@ async function archiveWeeklyWinners() {
       }
     }
 
-    console.log(`Week ${previousWeekId} archived with ${top3.length} winners`);
     showToast(`Week ${previousWeekId} archived! ${top3.length} winners auto-claimed.`, 'success');
-
   } catch (err) {
     console.error('Archive weekly winners error:', err);
     showToast('Error archiving week. Check console.', 'error');
@@ -702,16 +671,17 @@ window.archiveWeeklyWinners = archiveWeeklyWinners;
 // SEEN QUESTIONS TRACKER (7-day cooldown)
 // ============================================
 
-async function getQuizQuestions(allQuestions) {
+async function getQuizQuestions(allQuestions, count) {
+  count = count || 15;  // Default 15 questions
   const user = auth.currentUser;
+
   if (!user || !Array.isArray(allQuestions) || allQuestions.length === 0) {
-    // Fallback: just shuffle and return 50
     const shuffled = [...allQuestions];
     for (let i = shuffled.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
-    return shuffled.slice(0, 50);
+    return shuffled.slice(0, Math.min(count, shuffled.length));
   }
 
   try {
@@ -733,23 +703,21 @@ async function getQuizQuestions(allQuestions) {
     });
 
     let available = allQuestions.filter(q => !recentlySeen.has(q.question));
+    const targetCount = Math.min(count, allQuestions.length);
 
-    // If pool exhausted, reset and use all
-    if (available.length < 50) {
+    if (available.length < targetCount) {
       available = allQuestions;
       prunedHistory.length = 0;
     }
 
-    // Shuffle available
     const shuffled = [...available];
     for (let i = shuffled.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
 
-    const selected = shuffled.slice(0, 50);
+    const selected = shuffled.slice(0, targetCount);
 
-    // Save selected questions to history
     const newHistory = selected.map(q => ({
       question: q.question,
       seenAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -762,20 +730,19 @@ async function getQuizQuestions(allQuestions) {
     return selected;
   } catch (err) {
     console.error('getQuizQuestions error:', err);
-    // Fallback
     const shuffled = [...allQuestions];
     for (let i = shuffled.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
-    return shuffled.slice(0, 50);
+    return shuffled.slice(0, Math.min(count, shuffled.length));
   }
 }
 
 window.getQuizQuestions = getQuizQuestions;
 
 // ============================================
-// QUIZ SAVE FUNCTION  —  BEST SCORE BUG FIX
+// QUIZ SAVE FUNCTION — BEST SCORE BUG FIX
 // ============================================
 
 async function saveQuizResult(score, totalQuestions, timeLeft, points) {
@@ -799,9 +766,10 @@ async function saveQuizResult(score, totalQuestions, timeLeft, points) {
       streak = 1;
     }
 
-    // ✅ BEST SCORE BUG FIX: store percentage (0-100) instead of raw count
+    // ✅ BEST SCORE FIX: Store percentage (0-100), not raw count
     const percentage = Math.round((score / totalQuestions) * 100);
-    const newBest = Math.max(percentage, userData.bestScore || 0);
+    const oldBest = userData.bestScore || 0;
+    const newBest = Math.max(percentage, oldBest);
     const newTotalPoints = (userData.totalPoints || 0) + points;
 
     await userRef.set({
@@ -809,7 +777,8 @@ async function saveQuizResult(score, totalQuestions, timeLeft, points) {
       email: user.email,
       totalPoints: newTotalPoints,
       quizzesTaken: (userData.quizzesTaken || 0) + 1,
-      bestScore: newBest,        // Now correctly stores 0-100
+      bestScore: newBest,
+      bestScoreFormat: 'percentage',
       currentStreak: streak,
       longestStreak: Math.max(streak, userData.longestStreak || 0),
       lastQuizDate: firebase.firestore.FieldValue.serverTimestamp()
@@ -864,13 +833,9 @@ async function updateWeeklyLeaderboard(userId, userName, points) {
 }
 
 // ============================================
-// HISTORICAL BEST SCORE RECALCULATION SCRIPT
+// HISTORICAL BEST SCORE RECALCULATION
 // ============================================
 
-/**
- * Recalculates bestScore for a single user from their quizAttempts history.
- * Call from console: await recalculateUserBestScore('USER_ID')
- */
 async function recalculateUserBestScore(userId) {
   try {
     const snap = await db.collection('quizAttempts')
@@ -880,27 +845,23 @@ async function recalculateUserBestScore(userId) {
     let maxPercentage = 0;
     snap.forEach(doc => {
       const data = doc.data();
-      // Support both old (raw count in bestScore) and new (percentage field)
       const pct = data.percentage || Math.round((data.score / data.totalQuestions) * 100) || 0;
       if (pct > maxPercentage) maxPercentage = pct;
     });
 
     await db.collection('users').doc(userId).update({
-      bestScore: maxPercentage
+      bestScore: maxPercentage,
+      bestScoreFormat: 'percentage'
     });
 
-    console.log(`✅ Recalculated bestScore for ${userId}: ${maxPercentage}%`);
+    console.log('Recalculated bestScore for', userId, ':', maxPercentage + '%');
     return maxPercentage;
   } catch (err) {
-    console.error(`❌ Recalculate bestScore error for ${userId}:`, err);
+    console.error('recalculateUserBestScore error for', userId, ':', err);
     throw err;
   }
 }
 
-/**
- * Admin function: Recalculates bestScore for ALL users.
- * Call from browser console: await recalculateAllBestScores()
- */
 async function recalculateAllBestScores() {
   try {
     const usersSnap = await db.collection('users').get();
@@ -913,12 +874,12 @@ async function recalculateAllBestScores() {
         updated++;
       } catch (err) {
         errors++;
-        console.error(`Failed to recalculate for ${userDoc.id}:`, err);
+        console.error('Failed to recalculate for', userDoc.id, ':', err);
       }
     }
 
-    showToast(`Best scores recalculated! Updated: ${updated}, Errors: ${errors}`, 'success');
-    console.log(`🏁 Recalculation complete. Updated: ${updated}, Errors: ${errors}`);
+    showToast('Best scores recalculated! Updated: ' + updated + ', Errors: ' + errors, 'success');
+    console.log('Recalculation complete. Updated:', updated, 'Errors:', errors);
     return { updated, errors };
   } catch (err) {
     console.error('recalculateAllBestScores error:', err);
@@ -1022,9 +983,7 @@ async function loadUserDashboard() {
       el('reward-current-points').textContent = (data.totalPoints || 0).toLocaleString();
     }
 
-    // Fetch sent milestones from rewardClaims collection
     const sentMilestones = await getSentMilestones(user.uid);
-
     updateRewardProgress(data.totalPoints || 0);
     updateRewardTiers(data.totalPoints || 0, data.claimedMilestones || [], sentMilestones);
 
@@ -1054,7 +1013,6 @@ async function loadProfile() {
     if (el('profile-points')) el('profile-points').textContent = (data.totalPoints || 0).toLocaleString();
     if (el('profile-streak')) el('profile-streak').textContent = (data.currentStreak || 0);
 
-    // Populate contact fields
     if (el('profile-phone')) el('profile-phone').value = data.phoneNumber || '';
     if (el('profile-network')) el('profile-network').value = data.networkProvider || '';
 
@@ -1085,12 +1043,9 @@ function updateRewardProgress(points) {
 }
 
 // ============================================
-// REWARD TIERS - FIXED WITH PROPER LIFECYCLE
+// REWARD TIERS
 // ============================================
 
-/**
- * Fetches milestone rewards that admin has marked as 'sent' from rewardClaims collection
- */
 async function getSentMilestones(userId) {
   try {
     const snap = await db.collection('rewardClaims')
@@ -1113,13 +1068,6 @@ async function getSentMilestones(userId) {
 
 window.getSentMilestones = getSentMilestones;
 
-/**
- * Updates reward tier display with proper lifecycle:
- * - LOCKED: Always visible, shows "X pts to go"
- * - UNLOCKED (not claimed): Shows "Claim Reward" button
- * - CLAIMED (pending): Shows "Claimed — Pending"
- * - SENT/PAID: HIDDEN completely
- */
 function updateRewardTiers(points, claimedMilestones, sentMilestones) {
   const tiers = [
     { threshold: 5000, reward: '1GB', id: 'tier-5000', dataReward: '1GB Data' },
@@ -1139,17 +1087,14 @@ function updateRewardTiers(points, claimedMilestones, sentMilestones) {
     const isClaimed = claimed.includes(tier.threshold);
     const isSent = sent.includes(tier.threshold);
 
-    // HIDE completely if admin has sent/paid this reward
     if (isSent) {
       if (tierCard) tierCard.style.display = 'none';
       return;
     }
 
-    // Ensure card is visible for non-sent states
     if (tierCard) tierCard.style.display = '';
 
     if (isClaimed) {
-      // User claimed but admin hasn't sent yet — show pending status
       el.innerHTML = 'Claimed — Pending ⏳ (' + tier.reward + ')';
       el.classList.add('unlocked');
       if (el.parentElement) el.parentElement.classList.add('tier-unlocked');
@@ -1161,15 +1106,12 @@ function updateRewardTiers(points, claimedMilestones, sentMilestones) {
       el.style.fontSize = '13px';
       el.style.fontWeight = '600';
     } else if (isUnlocked) {
-      // Threshold reached, not claimed yet — show CLAIM BUTTON
-      // FIXED: Proper string escaping for onclick handler
-      const onclickAttr = "claimMilestoneReward(" + tier.threshold + ", '" + tier.dataReward.replace(/'/g, "\'") + "')";
+      const onclickAttr = "claimMilestoneReward(" + tier.threshold + ", '" + tier.dataReward.replace(/'/g, "\\'") + "')";
       el.innerHTML = '<button onclick="' + onclickAttr + '" class="primary-btn claim-reward-btn" style="padding: 8px 18px; font-size: 13px; border-radius: 10px; font-weight: 600;">Claim ' + tier.reward + '</button>';
       el.classList.add('unlocked');
       if (el.parentElement) el.parentElement.classList.add('tier-unlocked');
       el.style.background = 'transparent';
     } else {
-      // Still locked — show remaining points
       const remaining = tier.threshold - points;
       el.textContent = remaining.toLocaleString() + ' pts to go 🔒 (' + tier.reward + ')';
       el.classList.remove('unlocked');
@@ -1194,7 +1136,6 @@ async function claimMilestoneReward(threshold, rewardType) {
     return;
   }
 
-  // Find the button that was clicked
   const btn = document.querySelector('.claim-reward-btn');
   if (btn) {
     btn.disabled = true;
@@ -1245,8 +1186,6 @@ async function claimMilestoneReward(threshold, rewardType) {
     });
 
     showToast('Reward claimed! Admin will send it shortly.', 'success');
-
-    // Refresh dashboard to show pending state
     await loadUserDashboard();
   } catch (err) {
     console.error('Claim error:', err);
@@ -1261,7 +1200,7 @@ async function claimMilestoneReward(threshold, rewardType) {
 window.claimMilestoneReward = claimMilestoneReward;
 
 // ============================================
-// DAILY QUIZ LIMIT (FAIL-CLOSED)
+// DAILY QUIZ LIMIT (2 per day = 30 questions)
 // ============================================
 
 async function checkDailyQuizLimit() {
@@ -1342,7 +1281,7 @@ function showDailyLimitMessage(timeData) {
       <div style="font-size: 48px; margin-bottom: 12px;">⏳</div>
       <h3 style="color: #92400e; margin-bottom: 8px;">You've taken your 2 quizzes today!</h3>
       <p style="color: #a16207; font-size: 14px; margin-bottom: 16px;">
-        You can take up to 2 quizzes per day. Come back tomorrow!
+        You can take up to 2 quizzes per day (30 questions total). Come back tomorrow!
       </p>
       <div style="font-size: 32px; font-weight: 800; color: #92400e; font-variant-numeric: tabular-nums;" id="countdown-timer">
         ${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}
@@ -1361,7 +1300,7 @@ function showQuizAttemptsLeft(attempts, isLoading, isError) {
   if (!el) return;
 
   if (isLoading) {
-    el.textContent = isError 
+    el.textContent = isError
       ? '⚠️ Unable to check daily limit. Tap Begin Test to retry.'
       : '🎯 Checking daily limit...';
     el.classList.remove('hidden');
@@ -1374,7 +1313,7 @@ function showQuizAttemptsLeft(attempts, isLoading, isError) {
   const safeAttempts = typeof attempts === 'number' ? attempts : 0;
 
   if (safeAttempts > 0) {
-    el.textContent = '🎯 ' + safeAttempts + ' of 2 quiz attempts left today';
+    el.textContent = '🎯 ' + safeAttempts + ' of 2 quiz attempts left today (30 questions max)';
     el.classList.remove('hidden');
     el.style.background = '#f0f9ff';
     el.style.borderColor = '#bae6fd';
@@ -1441,7 +1380,6 @@ async function handleBeginQuiz() {
 
   if (limitCheck.blocked) {
     if (limitCheck.reason === 'check_failed') {
-      // If check failed, let them try anyway but warn them
       showToast('⚠️ Could not verify daily limit. Proceeding...', 'info');
       showScreen('quiz');
       if (typeof window.startQuiz === 'function') window.startQuiz();
@@ -1483,12 +1421,21 @@ function attachEventListeners() {
   if (registerTab) registerTab.addEventListener('click', () => switchAuthTab('register'));
 
   const beginTestBtn = document.getElementById('begin-test-btn');
-  const viewLeaderboardBtn = document.getElementById('view-leaderboard-btn');
-  const viewRewardsBtn = document.getElementById('view-rewards-btn');
+  const resumeBtn = document.getElementById('resume-quiz-btn');
 
   if (beginTestBtn) {
     beginTestBtn.addEventListener('click', handleBeginQuiz);
   }
+
+  if (resumeBtn) {
+    resumeBtn.addEventListener('click', () => {
+      showScreen('quiz');
+      if (typeof window.startQuiz === 'function') window.startQuiz();
+    });
+  }
+
+  const viewLeaderboardBtn = document.getElementById('view-leaderboard-btn');
+  const viewRewardsBtn = document.getElementById('view-rewards-btn');
 
   if (viewLeaderboardBtn) {
     viewLeaderboardBtn.addEventListener('click', () => {
@@ -1656,7 +1603,7 @@ function showBrowserNotification(title, body) {
 // ============================================
 
 auth.setPersistence(firebase.auth.Auth.Persistence.NONE).then(() => {
-  console.log('🔒 Auth persistence set to NONE (login required every session)');
+  console.log('Auth persistence set to NONE (login required every session)');
 }).catch(err => {
   console.error('Auth persistence error:', err);
 });
@@ -1667,4 +1614,4 @@ if (document.readyState === 'loading') {
   attachEventListeners();
 }
 
-console.log('🔥 firebase.js fully loaded (v2 - corrected)');
+console.log('firebase.js v3 loaded — week sync, bestScore %, auto-save, recalc ready');
