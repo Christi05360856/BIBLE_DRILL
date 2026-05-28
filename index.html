@@ -12,7 +12,23 @@
 <base target="_blank">
 </head>
 <body>
-
+<!-- Maintenance Banner -->
+<div id="maintenance-banner" style="
+    background-color: #ff9800; 
+    color: white; 
+    text-align: center; 
+    padding: 14px 10px; 
+    font-weight: bold; 
+    font-size: 15px; 
+    position: sticky; 
+    top: 0; 
+    z-index: 9999;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+">
+    🚧 We are working on a big upgrade for a much better experience. 
+    Some features may be slower during this period. Thank you for your patience! 🚧
+</div>
+  
   <!-- FIXED LOGOUT BUTTON (top-right, visible when logged in) -->
   <button id="fixed-logout-btn" class="fixed-logout hidden" onclick="handleLogout()">
     <i class="fas fa-sign-out-alt"></i>
